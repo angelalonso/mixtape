@@ -228,12 +228,22 @@ function renderMixTapesList() {
         const isAvailable = tape ? window.checkTapeAvailable(tape.path) : false;
         
         let applyButton;
+        let progressInfo = "";
+        
         if (isRunning) {
-            applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #ff9800; color: #000;" disabled>⏳ Running...</button>`;
+            const op = window.rsyncOperations[mt.id];
+            if (op.totalBatches > 0) {
+                const progress = Math.round((op.completedBatches / op.totalBatches) * 100);
+                const activeBatch = op.currentBatch !== undefined ? op.currentBatch + 1 : "?";
+                progressInfo = ` ${progress}% (batch ${activeBatch}/${op.totalBatches})`;
+                applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #ff9800; color: #000;" disabled>Running${progressInfo}</button>`;
+            } else {
+                applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #ff9800; color: #000;" disabled>Running...</button>`;
+            }
         } else if (!isAvailable) {
             applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #cf6679; color: #fff; cursor: not-allowed; opacity: 0.8;" disabled>Not available</button>`;
         } else {
-            applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #03dac6; color: #000;" onclick="applyMixTape('${mt.id}')">▶ Apply</button>`;
+            applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #03dac6; color: #000;" onclick="applyMixTape('${mt.id}')">Apply</button>`;
         }
         
         return `
@@ -246,6 +256,8 @@ function renderMixTapesList() {
                         ${mixName} → ${tapeName}
                     </span>
                     ${!isAvailable ? `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(Tape not mounted)</span>` : ''}
+                    ${isRunning && window.rsyncOperations[mt.id] && window.rsyncOperations[mt.id].failedBatches > 0 ? 
+                        `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(${window.rsyncOperations[mt.id].failedBatches} failed)</span>` : ''}
                 </div>
             </div>
             <div style="display: flex; gap: 10px;">
@@ -474,12 +486,6 @@ window.applyMixTape = function(mixTapeId) {
         return;
     }
     
-    window.rsyncOperations[mixTapeId] = {
-        running: true,
-        started: Date.now()
-    };
-    renderLists();
-    
     const sourcePaths = mix.paths;
     const destPath = tape.path;
     const MAX_PATHS_PER_BATCH = 20;
@@ -494,6 +500,17 @@ window.applyMixTape = function(mixTapeId) {
     let failedBatches = 0;
     let errorMessages = [];
     
+    // Initialize operation tracking with progress info
+    window.rsyncOperations[mixTapeId] = {
+        running: true,
+        started: Date.now(),
+        totalBatches: totalBatches,
+        completedBatches: 0,
+        failedBatches: 0,
+        currentBatch: null
+    };
+    renderLists();
+    
     console.log(`[Mix-Tape: ${mixTape.name}] Starting rsync of ${sourcePaths.length} path(s) in ${totalBatches} batch(es) to ${destPath}`);
     
     batches.forEach((batch, batchIndex) => {
@@ -505,6 +522,12 @@ window.applyMixTape = function(mixTapeId) {
         
         const cmdId = `${mixTapeId}-batch-${batchIndex}`;
         
+        // Update current batch in progress tracking
+        if (window.rsyncOperations[mixTapeId]) {
+            window.rsyncOperations[mixTapeId].currentBatch = batchIndex;
+            renderLists();
+        }
+        
         window.rsyncCallbacks = window.rsyncCallbacks || {};
         window.rsyncCallbacks[cmdId] = function(result, output) {
             completedBatches++;
@@ -513,15 +536,25 @@ window.applyMixTape = function(mixTapeId) {
                 errorMessages.push(`Batch ${batchIndex+1}: ${result}`);
             }
             
+            // Update progress tracking
+            if (window.rsyncOperations[mixTapeId]) {
+                window.rsyncOperations[mixTapeId].completedBatches = completedBatches;
+                window.rsyncOperations[mixTapeId].failedBatches = failedBatches;
+                renderLists();
+            }
+            
             console.log(`[Mix-Tape: ${mixTape.name}] Batch ${batchIndex+1}/${totalBatches}: ${result}`);
             if (output) {
                 console.log(`Output: ${output}`);
             }
             
             if (completedBatches === totalBatches) {
-                window.rsyncOperations[mixTapeId].running = false;
-                window.rsyncOperations[mixTapeId].completed = Date.now();
-                renderLists();
+                // Operation complete - keep the operation object for 30 seconds to show completion status
+                if (window.rsyncOperations[mixTapeId]) {
+                    window.rsyncOperations[mixTapeId].running = false;
+                    window.rsyncOperations[mixTapeId].completed = Date.now();
+                    renderLists();
+                }
                 
                 const successCount = totalBatches - failedBatches;
                 let summary = `Rsync completed for "${mixTape.name}":\n`;
@@ -531,6 +564,14 @@ window.applyMixTape = function(mixTapeId) {
                 }
                 console.log(`[Mix-Tape: ${mixTape.name}] ${summary}`);
                 alert(summary);
+                
+                // Clear operation tracking after a delay (30 seconds)
+                setTimeout(() => {
+                    if (window.rsyncOperations[mixTapeId] && !window.rsyncOperations[mixTapeId].running) {
+                        delete window.rsyncOperations[mixTapeId];
+                        renderLists();
+                    }
+                }, 30000);
             }
         };
         
