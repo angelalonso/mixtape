@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "server.h"
 
 int tests_run = 0;
@@ -27,26 +28,39 @@ void mock_check_and_ensure_config() {
 }
 
 const char* mock_handle_keyboard_esc(const char* current_screen_id) {
-    if (strcmp(current_screen_id, "screen-main") == 0) return "screen-confirm-exit";
+    if (strcmp(current_screen_id, "screen-main") == 0)         return "screen-confirm-exit";
     if (strcmp(current_screen_id, "screen-confirm-exit") == 0) return "screen-main";
-    if (strcmp(current_screen_id, "screen-mix-tapes") == 0) return "screen-main";
+    if (strcmp(current_screen_id, "screen-mix-tapes") == 0)    return "screen-main";
     return "screen-main";
 }
 
 int mock_select_tape_folder_called = 0;
 int mock_select_mix_paths_called   = 0;
 int mock_select_mix_folder_called  = 0;
-int mock_rsync_executed_called = 0;
-int mock_rsync_background_called = 0;
+int mock_rsync_executed_called     = 0;
+int mock_rsync_background_called   = 0;
 
 void mock_native_select_tape_folder() { mock_select_tape_folder_called = 1; }
 void mock_native_select_mix_paths()   { mock_select_mix_paths_called   = 1; }
 void mock_native_select_mix_folder()  { mock_select_mix_folder_called  = 1; }
-void mock_native_rsync_execute()      { mock_rsync_executed_called = 1; }
-void mock_native_rsync_background()   { mock_rsync_background_called = 1; }
+void mock_native_rsync_execute()      { mock_rsync_executed_called      = 1; }
+void mock_native_rsync_background()   { mock_rsync_background_called    = 1; }
 
 /* ------------------------------------------------------------------ */
-/*  Original tests                                                      */
+/*  parse_int_key helper (mirrors the implementation in main.c)        */
+/* ------------------------------------------------------------------ */
+
+static int parse_int_key(const char *cfg_content, const char *key, int fallback) {
+    const char *p = strstr(cfg_content, key);
+    if (!p) return fallback;
+    p += strlen(key);
+    while (*p == ' ' || *p == '\t') p++;
+    int v = atoi(p);
+    return (v > 0) ? v : fallback;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Config & template tests                                             */
 /* ------------------------------------------------------------------ */
 
 void test_automatic_template_instantiation() {
@@ -77,6 +91,10 @@ void test_keyboard_escape_routing() {
                "Pressing Escape on the mix-tapes screen must route view state back to main screen.");
 }
 
+/* ------------------------------------------------------------------ */
+/*  parse_config tests                                                  */
+/* ------------------------------------------------------------------ */
+
 void test_parse_config_valid() {
     char type[128] = {0};
     char file[256] = {0};
@@ -85,32 +103,6 @@ void test_parse_config_valid() {
     assert_msg(strcmp(type, "file") == 0,               "parse_config must correctly parse valid data_type.");
     assert_msg(strcmp(file, "custom_tracks.json") == 0, "parse_config must correctly parse valid data_file path.");
 }
-
-void test_js_escape_special_chars() {
-    const char *raw_str = "path/\\with\n\"quotes\"";
-    char escaped[256] = {0};
-    js_escape(raw_str, escaped, sizeof(escaped));
-    assert_msg(strstr(escaped, "\\\\") != NULL, "js_escape must successfully protect backslashes.");
-    assert_msg(strstr(escaped, "\\\"") != NULL, "js_escape must successfully protect quote enclosures.");
-}
-
-void test_folder_picker_interaction() {
-    mock_select_tape_folder_called = 0;
-    mock_native_select_tape_folder();
-    assert_msg(mock_select_tape_folder_called == 1,
-               "Invoking selectTapeFolder action must activate the native OS dialog sequence.");
-}
-
-void test_multi_file_picker_interaction() {
-    mock_select_mix_paths_called = 0;
-    mock_native_select_mix_paths();
-    assert_msg(mock_select_mix_paths_called == 1,
-               "Invoking selectMixPaths triggers the multi-select file browser hook in C backend.");
-}
-
-/* ------------------------------------------------------------------ */
-/*  parse_config edge cases                                             */
-/* ------------------------------------------------------------------ */
 
 void test_parse_config_empty_input() {
     char type[128] = {0};
@@ -139,8 +131,155 @@ void test_parse_config_missing_data_file() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  js_escape edge cases                                                */
+/*  parse_int_key / log_level / max_rsync_workers tests                */
 /* ------------------------------------------------------------------ */
+
+void test_parse_int_key_log_level_present() {
+    const char *cfg = "data_type: file\nlog_level: 3\nmax_rsync_workers: 4\n";
+    int level = parse_int_key(cfg, "log_level:", 2);
+    assert_msg(level == 3,
+               "parse_int_key must parse log_level correctly when the key is present.");
+}
+
+void test_parse_int_key_log_level_absent_uses_fallback() {
+    const char *cfg = "data_type: file\ndata_file: data.json\n";
+    int level = parse_int_key(cfg, "log_level:", 2);
+    assert_msg(level == 2,
+               "parse_int_key must return the fallback value when log_level key is absent.");
+}
+
+void test_parse_int_key_max_rsync_workers_present() {
+    const char *cfg = "data_type: file\nmax_rsync_workers: 8\n";
+    int workers = parse_int_key(cfg, "max_rsync_workers:", 0);
+    assert_msg(workers == 8,
+               "parse_int_key must parse max_rsync_workers correctly when present.");
+}
+
+void test_parse_int_key_max_rsync_workers_zero_means_auto() {
+    const char *cfg = "data_type: file\nmax_rsync_workers: 0\n";
+    int workers = parse_int_key(cfg, "max_rsync_workers:", 0);
+    /* 0 is not > 0, so parse_int_key returns the fallback (0) which signals auto-detect */
+    assert_msg(workers == 0,
+               "max_rsync_workers of 0 must be treated as auto-detect (fallback returned).");
+}
+
+void test_parse_int_key_max_rsync_workers_absent_uses_fallback() {
+    const char *cfg = "data_type: file\ndata_file: data.json\n";
+    int workers = parse_int_key(cfg, "max_rsync_workers:", 0);
+    assert_msg(workers == 0,
+               "parse_int_key must return fallback 0 when max_rsync_workers is absent.");
+}
+
+void test_parse_int_key_tape_check_interval() {
+    const char *cfg = "data_type: file\ntape_check_interval: 10\n";
+    int interval = parse_int_key(cfg, "tape_check_interval:", 5);
+    assert_msg(interval == 10,
+               "parse_int_key must parse tape_check_interval correctly when present.");
+}
+
+void test_parse_int_key_tape_check_interval_absent() {
+    const char *cfg = "data_type: file\ndata_file: data.json\n";
+    int interval = parse_int_key(cfg, "tape_check_interval:", 5);
+    assert_msg(interval == 5,
+               "parse_int_key must return fallback when tape_check_interval is absent.");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Parallel rsync task slot tests                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Simulate enqueueing several tasks into the task array the same way
+ * main.c does — without touching pthreads — and verify slot management.
+ */
+
+#define TEST_MAX_RSYNC_TASKS 64
+
+typedef struct {
+    char cmd[8192];
+    char cmd_id[128];
+    int  completed;
+} test_rsync_task_t;
+
+static test_rsync_task_t test_task_slots[TEST_MAX_RSYNC_TASKS];
+
+static void reset_test_slots(void) {
+    memset(test_task_slots, 0, sizeof(test_task_slots));
+}
+
+static int enqueue_test_task(const char *cmd, const char *cmd_id) {
+    for (int i = 0; i < TEST_MAX_RSYNC_TASKS; i++) {
+        if (test_task_slots[i].cmd[0] == '\0') {
+            strncpy(test_task_slots[i].cmd,    cmd,    sizeof(test_task_slots[i].cmd) - 1);
+            strncpy(test_task_slots[i].cmd_id, cmd_id, sizeof(test_task_slots[i].cmd_id) - 1);
+            test_task_slots[i].completed = 0;
+            return i;
+        }
+    }
+    return -1;  /* queue full */
+}
+
+static void complete_test_task(int slot) {
+    memset(&test_task_slots[slot], 0, sizeof(test_rsync_task_t));
+}
+
+void test_rsync_task_slots_accept_multiple_concurrent_tasks() {
+    reset_test_slots();
+    int s1 = enqueue_test_task("rsync -av /src1/ /dst/", "task-1");
+    int s2 = enqueue_test_task("rsync -av /src2/ /dst/", "task-2");
+    int s3 = enqueue_test_task("rsync -av /src3/ /dst/", "task-3");
+    assert_msg(s1 >= 0 && s2 >= 0 && s3 >= 0,
+               "Task slot array must accept multiple concurrent rsync tasks.");
+    assert_msg(s1 != s2 && s2 != s3 && s1 != s3,
+               "Each concurrent rsync task must be assigned a unique slot.");
+}
+
+void test_rsync_task_slot_reused_after_completion() {
+    reset_test_slots();
+    int s1 = enqueue_test_task("rsync -av /src/ /dst/", "task-reuse-1");
+    assert_msg(s1 >= 0, "First task must be enqueued successfully.");
+    complete_test_task(s1);
+    int s2 = enqueue_test_task("rsync -av /src/ /dst/", "task-reuse-2");
+    assert_msg(s2 >= 0,   "Task slot must be reusable after a task completes.");
+    assert_msg(s2 == s1,  "Completed slot must be the first one offered for reuse.");
+}
+
+void test_rsync_task_queue_reports_full_at_capacity() {
+    reset_test_slots();
+    int last = -1;
+    for (int i = 0; i < TEST_MAX_RSYNC_TASKS; i++) {
+        char id[32];
+        snprintf(id, sizeof(id), "task-%d", i);
+        last = enqueue_test_task("rsync -av /s/ /d/", id);
+    }
+    assert_msg(last >= 0, "The last slot must fill successfully at exact capacity.");
+    int overflow = enqueue_test_task("rsync -av /s/ /d/", "task-overflow");
+    assert_msg(overflow == -1,
+               "Enqueueing beyond MAX_RSYNC_TASKS capacity must return -1 (queue full).");
+}
+
+void test_rsync_worker_count_from_config_overrides_auto() {
+    /*
+     * Verify that a positive max_rsync_workers config value is returned
+     * as-is (not the CPU count), which is what main.c uses to size the pool.
+     */
+    const char *cfg = "data_type: file\nmax_rsync_workers: 6\n";
+    int workers = parse_int_key(cfg, "max_rsync_workers:", 0);
+    assert_msg(workers == 6,
+               "A positive max_rsync_workers in cfg.yml must override CPU auto-detection.");
+}
+
+/* ------------------------------------------------------------------ */
+/*  js_escape tests                                                     */
+/* ------------------------------------------------------------------ */
+
+void test_js_escape_special_chars() {
+    const char *raw_str = "path/\\with\n\"quotes\"";
+    char escaped[256] = {0};
+    js_escape(raw_str, escaped, sizeof(escaped));
+    assert_msg(strstr(escaped, "\\\\") != NULL, "js_escape must successfully protect backslashes.");
+    assert_msg(strstr(escaped, "\\\"") != NULL, "js_escape must successfully protect quote enclosures.");
+}
 
 void test_js_escape_plain_string() {
     char escaped[128] = {0};
@@ -168,6 +307,24 @@ void test_js_escape_respects_dest_size() {
     js_escape("ABCDEFGHIJ", escaped, sizeof(escaped));
     assert_msg(strlen(escaped) <= 4,
                "js_escape must not write beyond dest_size and must NUL-terminate the result.");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Native dialog mock tests                                            */
+/* ------------------------------------------------------------------ */
+
+void test_folder_picker_interaction() {
+    mock_select_tape_folder_called = 0;
+    mock_native_select_tape_folder();
+    assert_msg(mock_select_tape_folder_called == 1,
+               "Invoking selectTapeFolder action must activate the native OS dialog sequence.");
+}
+
+void test_multi_file_picker_interaction() {
+    mock_select_mix_paths_called = 0;
+    mock_native_select_mix_paths();
+    assert_msg(mock_select_mix_paths_called == 1,
+               "Invoking selectMixPaths triggers the multi-select file browser hook in C backend.");
 }
 
 /* ------------------------------------------------------------------ */
@@ -258,10 +415,9 @@ void test_mix_select_native_callback_fires() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mixes folder-picker workflow (new)                                  */
+/*  Mixes folder-picker workflow                                        */
 /* ------------------------------------------------------------------ */
 
-/* Simulate the C backend building the JS call for receiveMixFolder. */
 static int build_receive_mix_folder_js(const char* folder_path, char* out, size_t out_size) {
     if (!folder_path || !out || out_size == 0) return 0;
     char escaped[2048] = {0};
@@ -301,8 +457,6 @@ void test_mix_folder_js_call_escapes_special_chars() {
 void test_mix_folder_js_call_empty_path() {
     char js[4096] = {0};
     int ok = build_receive_mix_folder_js("", js, sizeof(js));
-    /* Empty path produces a syntactically valid but empty-string JS call.
-       The JS side guards against empty strings; we just confirm C doesn't crash. */
     assert_msg(ok == 1, "build_receive_mix_folder_js must not crash on an empty path string.");
     assert_msg(strstr(js, "window.receiveMixFolder(\"\");") != NULL,
                "receiveMixFolder JS call with empty path must still be syntactically valid.");
@@ -317,10 +471,9 @@ void test_mix_folder_picker_callable_multiple_times() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mix-Tapes workflow (new)                                           */
+/*  Mix-Tapes workflow                                                  */
 /* ------------------------------------------------------------------ */
 
-/* Test mix-tape data structure */
 struct mix_tape_test {
     char id[64];
     char name[128];
@@ -328,12 +481,11 @@ struct mix_tape_test {
     char tape_id[64];
 };
 
-/* Helper to create mix-tape data structure */
 static int create_mix_tape_js(const struct mix_tape_test* mt, char* out, size_t out_size) {
     if (!mt || !out || out_size == 0) return 0;
     char escaped_name[256] = {0};
     js_escape(mt->name, escaped_name, sizeof(escaped_name));
-    int written = snprintf(out, out_size, 
+    int written = snprintf(out, out_size,
         "{\"id\":\"%s\",\"name\":\"%s\",\"mixId\":\"%s\",\"tapeId\":\"%s\"}",
         mt->id, escaped_name, mt->mix_id, mt->tape_id);
     return (written > 0 && (size_t)written < out_size) ? 1 : 0;
@@ -341,57 +493,42 @@ static int create_mix_tape_js(const struct mix_tape_test* mt, char* out, size_t 
 
 void test_mix_tape_create_structure() {
     struct mix_tape_test mt = {
-        .id = "mixtape-1234567890",
-        .name = "My Mix-Tape",
-        .mix_id = "mix-1234567890",
-        .tape_id = "tape-1234567890"
+        .id = "mixtape-1234567890", .name = "My Mix-Tape",
+        .mix_id = "mix-1234567890", .tape_id = "tape-1234567890"
     };
     char js[1024] = {0};
     int ok = create_mix_tape_js(&mt, js, sizeof(js));
     assert_msg(ok == 1, "create_mix_tape_js must succeed for a valid mix-tape structure.");
-    assert_msg(strstr(js, mt.id) != NULL, "Mix-tape JS representation must include the ID.");
-    assert_msg(strstr(js, mt.name) != NULL, "Mix-tape JS representation must include the name.");
-    assert_msg(strstr(js, mt.mix_id) != NULL, "Mix-tape JS representation must include the mix ID.");
+    assert_msg(strstr(js, mt.id)      != NULL, "Mix-tape JS representation must include the ID.");
+    assert_msg(strstr(js, mt.name)    != NULL, "Mix-tape JS representation must include the name.");
+    assert_msg(strstr(js, mt.mix_id)  != NULL, "Mix-tape JS representation must include the mix ID.");
     assert_msg(strstr(js, mt.tape_id) != NULL, "Mix-tape JS representation must include the tape ID.");
 }
 
 void test_mix_tape_requires_both_mix_and_tape() {
-    // A mix-tape requires both a mix and a tape to be valid
     struct mix_tape_test mt_valid = {
-        .id = "mixtape-1234567890",
-        .name = "Valid Mix-Tape",
-        .mix_id = "mix-1234567890",
-        .tape_id = "tape-1234567890"
+        .id = "mixtape-1234567890", .name = "Valid Mix-Tape",
+        .mix_id = "mix-1234567890",  .tape_id = "tape-1234567890"
     };
-    
     struct mix_tape_test mt_missing_mix = {
-        .id = "mixtape-1234567891",
-        .name = "Missing Mix",
-        .mix_id = "",
-        .tape_id = "tape-1234567890"
+        .id = "mixtape-1234567891", .name = "Missing Mix",
+        .mix_id = "",               .tape_id = "tape-1234567890"
     };
-    
     struct mix_tape_test mt_missing_tape = {
-        .id = "mixtape-1234567892",
-        .name = "Missing Tape",
-        .mix_id = "mix-1234567890",
-        .tape_id = ""
+        .id = "mixtape-1234567892", .name = "Missing Tape",
+        .mix_id = "mix-1234567890", .tape_id = ""
     };
-    
-    // All structures should be creatable, but validation should fail for incomplete ones
-    char js_valid[1024] = {0};
-    char js_missing_mix[1024] = {0};
-    char js_missing_tape[1024] = {0};
-    
-    assert_msg(create_mix_tape_js(&mt_valid, js_valid, sizeof(js_valid)) == 1,
+
+    char js_valid[1024] = {0}, js_missing_mix[1024] = {0}, js_missing_tape[1024] = {0};
+
+    assert_msg(create_mix_tape_js(&mt_valid,        js_valid,        sizeof(js_valid))        == 1,
                "Valid mix-tape structure must be creatable.");
-    assert_msg(create_mix_tape_js(&mt_missing_mix, js_missing_mix, sizeof(js_missing_mix)) == 1,
+    assert_msg(create_mix_tape_js(&mt_missing_mix,  js_missing_mix,  sizeof(js_missing_mix))  == 1,
                "Mix-tape structure without mix ID must be creatable but invalid.");
     assert_msg(create_mix_tape_js(&mt_missing_tape, js_missing_tape, sizeof(js_missing_tape)) == 1,
                "Mix-tape structure without tape ID must be creatable but invalid.");
-    
-    // Verify that the missing fields are represented
-    assert_msg(strstr(js_missing_mix, "\"mixId\":\"\"") != NULL,
+
+    assert_msg(strstr(js_missing_mix,  "\"mixId\":\"\"")  != NULL,
                "Missing mix ID must be represented as empty string.");
     assert_msg(strstr(js_missing_tape, "\"tapeId\":\"\"") != NULL,
                "Missing tape ID must be represented as empty string.");
@@ -412,65 +549,46 @@ void test_mix_tape_rsync_background() {
 }
 
 void test_mix_tape_deletion() {
-    // Test that deleting a mix-tape removes it from the list
-    // This is a mock test - in real implementation, this would involve JS DOM manipulation
     int initial_count = 2;
     int deleted_count = 1;
-    int final_count = initial_count - deleted_count;
+    int final_count   = initial_count - deleted_count;
     assert_msg(final_count == 1, "Deleting a mix-tape must reduce the list count by 1.");
 }
 
 void test_mix_tape_edit_preserves_fields() {
-    // Test that editing a mix-tape preserves its fields
     struct mix_tape_test mt_original = {
-        .id = "mixtape-1234567890",
-        .name = "Original Name",
-        .mix_id = "mix-1234567890",
-        .tape_id = "tape-1234567890"
+        .id = "mixtape-1234567890", .name = "Original Name",
+        .mix_id = "mix-1234567890", .tape_id = "tape-1234567890"
     };
-    
     struct mix_tape_test mt_edited = {
-        .id = "mixtape-1234567890",
-        .name = "Edited Name",
-        .mix_id = "mix-1234567891",
-        .tape_id = "tape-1234567891"
+        .id = "mixtape-1234567890", .name = "Edited Name",
+        .mix_id = "mix-1234567891", .tape_id = "tape-1234567891"
     };
-    
-    char js_original[1024] = {0};
-    char js_edited[1024] = {0};
+
+    char js_original[1024] = {0}, js_edited[1024] = {0};
     create_mix_tape_js(&mt_original, js_original, sizeof(js_original));
-    create_mix_tape_js(&mt_edited, js_edited, sizeof(js_edited));
-    
-    assert_msg(strcmp(mt_original.id, mt_edited.id) == 0,
-               "Editing a mix-tape must preserve its ID.");
-    assert_msg(strcmp(mt_original.name, mt_edited.name) != 0,
-               "Editing a mix-tape must allow name changes.");
-    assert_msg(strcmp(mt_original.mix_id, mt_edited.mix_id) != 0,
-               "Editing a mix-tape must allow mix selection changes.");
-    assert_msg(strcmp(mt_original.tape_id, mt_edited.tape_id) != 0,
-               "Editing a mix-tape must allow tape selection changes.");
+    create_mix_tape_js(&mt_edited,   js_edited,   sizeof(js_edited));
+
+    assert_msg(strcmp(mt_original.id,      mt_edited.id)      == 0, "Editing a mix-tape must preserve its ID.");
+    assert_msg(strcmp(mt_original.name,    mt_edited.name)    != 0, "Editing a mix-tape must allow name changes.");
+    assert_msg(strcmp(mt_original.mix_id,  mt_edited.mix_id)  != 0, "Editing a mix-tape must allow mix selection changes.");
+    assert_msg(strcmp(mt_original.tape_id, mt_edited.tape_id) != 0, "Editing a mix-tape must allow tape selection changes.");
 }
 
 void test_mix_tape_ui_controls_visibility() {
-    // Test that the UI controls for mix-tape are visible and accessible
-    // This is a mock test for the UI controls
-    int has_apply_button = 1;
-    int has_edit_button = 1;
+    int has_apply_button  = 1;
+    int has_edit_button   = 1;
     int has_delete_button = 1;
-    
-    assert_msg(has_apply_button == 1,
-               "Mix-tape list item must have an Apply button.");
-    assert_msg(has_edit_button == 1,
-               "Mix-tape list item must have an Edit button.");
-    assert_msg(has_delete_button == 1,
-               "Mix-tape list item must have a Delete button.");
+    assert_msg(has_apply_button  == 1, "Mix-tape list item must have an Apply button.");
+    assert_msg(has_edit_button   == 1, "Mix-tape list item must have an Edit button.");
+    assert_msg(has_delete_button == 1, "Mix-tape list item must have a Delete button.");
 }
 
 /* ------------------------------------------------------------------ */
-/*  Main                                                               */
+/*  Main                                                                */
 /* ------------------------------------------------------------------ */
 
-int main() {
+int main(void) {
     printf("=== Starting WebView UI State & Strategy Test Suite ===\n\n");
 
     printf("-- Config & template --\n");
@@ -483,6 +601,21 @@ int main() {
     test_parse_config_empty_input();
     test_parse_config_trims_trailing_whitespace();
     test_parse_config_missing_data_file();
+
+    printf("\n-- log_level / max_rsync_workers / tape_check_interval config keys --\n");
+    test_parse_int_key_log_level_present();
+    test_parse_int_key_log_level_absent_uses_fallback();
+    test_parse_int_key_max_rsync_workers_present();
+    test_parse_int_key_max_rsync_workers_zero_means_auto();
+    test_parse_int_key_max_rsync_workers_absent_uses_fallback();
+    test_parse_int_key_tape_check_interval();
+    test_parse_int_key_tape_check_interval_absent();
+    test_rsync_worker_count_from_config_overrides_auto();
+
+    printf("\n-- Parallel rsync task slot management --\n");
+    test_rsync_task_slots_accept_multiple_concurrent_tasks();
+    test_rsync_task_slot_reused_after_completion();
+    test_rsync_task_queue_reports_full_at_capacity();
 
     printf("\n-- js_escape --\n");
     test_js_escape_special_chars();

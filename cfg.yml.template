@@ -1,3 +1,5 @@
 data_type: file
-data_file: data.txt
+data_file: data.json
 tape_check_interval: 5
+log_level: 2
+max_rsync_workers: 0
