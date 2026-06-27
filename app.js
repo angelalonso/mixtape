@@ -173,7 +173,7 @@ function renderMixesList() {
     
     mixesList.innerHTML = '<ul style="list-style-type: none; padding: 0; margin: 0;">' + 
         window.appState.mixes.map((mix, index) => {
-            let mObj = typeof mix === 'string' ? { id: "legacy-mix-"+index, name: mix, paths: [mix] } : mix;
+            let mObj = typeof mix === 'string' ? { id: "legacy-mix-"+index, name: mix, paths: [{path: mix, exclude: false, generic: false}] } : mix;
             if (typeof mix === 'string') window.appState.mixes[index] = mObj;
             return `
             <li class="list-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 5px; border-bottom: 1px solid #444;">
@@ -253,7 +253,7 @@ function renderMixTapesList() {
                 <div>
                     <span style="font-size: 1.05rem; color: #e0e0e0; font-weight: 500;">${mt.name}</span>
                     <span style="color: #777; font-size: 0.85rem; margin-left: 15px;">
-                        ${mixName} → ${tapeName}
+                        ${mixName} -> ${tapeName}
                     </span>
                     ${!isAvailable ? `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(Tape not mounted)</span>` : ''}
                     ${isRunning && window.rsyncOperations[mt.id] && window.rsyncOperations[mt.id].failedBatches > 0 ? 
@@ -297,7 +297,6 @@ window.receiveTapeAvailability = function(data) {
 function checkAllTapeAvailability() {
     const tapes = window.appState.tapes || [];
     let totalTapes = 0;
-    let unavailableTapes = 0;
     
     tapes.forEach(tape => {
         if (tape.path) {
@@ -305,13 +304,6 @@ function checkAllTapeAvailability() {
             callNative("checkTapeAvailability:" + tape.path);
         }
     });
-    
-    // After all checks complete, we'll log the summary
-    // The log will be printed after all responses are received
-    // We'll track this with a counter
-    if (totalTapes === 0) {
-        // No tapes to check
-    }
 }
 
 // Track tape availability check responses for logging
@@ -320,7 +312,6 @@ window._tapeCheckTotal = 0;
 window._tapeCheckCompleted = 0;
 
 // Override receiveTapeAvailability to also handle logging
-const originalReceiveTapeAvailability = window.receiveTapeAvailability;
 window.receiveTapeAvailability = function(data) {
     try {
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
@@ -481,12 +472,15 @@ window.applyMixTape = function(mixTapeId) {
         return;
     }
     
-    if (!mix.paths || mix.paths.length === 0) {
-        alert("The selected Mix has no paths to copy.");
+    const normalizedPaths = (mix.paths || []).map(p => typeof p === 'string' ? { path: p, exclude: false, generic: false } : p);
+    const sourcePaths = normalizedPaths.filter(p => !p.exclude).map(p => p.path);
+    const excludePaths = normalizedPaths.filter(p => p.exclude);
+    
+    if (sourcePaths.length === 0) {
+        alert("The selected Mix has no included paths to copy.");
         return;
     }
     
-    const sourcePaths = mix.paths;
     const destPath = tape.path;
     const MAX_PATHS_PER_BATCH = 20;
     
@@ -515,6 +509,16 @@ window.applyMixTape = function(mixTapeId) {
     
     batches.forEach((batch, batchIndex) => {
         let cmd = "rsync -av";
+        
+        excludePaths.forEach(ex => {
+            if (ex.generic) {
+                const filename = ex.path.split(/[/\\]/).pop();
+                cmd += ` --exclude='**/${filename}'`;
+            } else {
+                cmd += ` --exclude='${ex.path}'`;
+            }
+        });
+
         batch.forEach(path => {
             cmd += ` '${path}'`;
         });
@@ -587,7 +591,6 @@ window.startNewMix = function() {
     window.tempMixPaths = [];
     renderMixPathsInEdit();
     showScreen('screen-add-mix-details');
-    callNative("selectMixPaths"); 
 };
 
 window.addMixPaths = function() {
@@ -601,7 +604,7 @@ window.addMixFolders = function() {
 window.receiveMixFolder = function(folderPath) {
     if (!folderPath) return;
 
-    window.tempMixPaths = window.tempMixPaths.concat([folderPath]);
+    window.tempMixPaths.push({ path: folderPath, exclude: false, generic: false });
 
     const mixId = document.getElementById('current-mix-id').value;
     const nameInput = document.getElementById('new-mix-name');
@@ -615,7 +618,7 @@ window.receiveMixFolder = function(folderPath) {
 window.receiveMixFolders = function(foldersArray) {
     if (!foldersArray || foldersArray.length === 0) return;
     
-    window.tempMixPaths = window.tempMixPaths.concat(foldersArray);
+    foldersArray.forEach(f => window.tempMixPaths.push({ path: f, exclude: false, generic: false }));
     
     const mixId = document.getElementById('current-mix-id').value;
     const nameInput = document.getElementById('new-mix-name');
@@ -629,7 +632,7 @@ window.receiveMixFolders = function(foldersArray) {
 window.receiveMixPaths = function(pathsArray) {
     if (!pathsArray || pathsArray.length === 0) return;
     
-    window.tempMixPaths = window.tempMixPaths.concat(pathsArray);
+    pathsArray.forEach(p => window.tempMixPaths.push({ path: p, exclude: false, generic: false }));
     
     const mixId = document.getElementById('current-mix-id').value;
     const nameInput = document.getElementById('new-mix-name');
@@ -645,18 +648,58 @@ window.removeMixPath = function(index) {
     renderMixPathsInEdit();
 };
 
+window.toggleExclude = function(index) {
+    window.tempMixPaths[index].exclude = !window.tempMixPaths[index].exclude;
+    if (!window.tempMixPaths[index].exclude) {
+        window.tempMixPaths[index].generic = false;
+    }
+    renderMixPathsInEdit();
+};
+
+window.toggleGeneric = function(index) {
+    window.tempMixPaths[index].generic = !window.tempMixPaths[index].generic;
+    renderMixPathsInEdit();
+};
+
 window.renderMixPathsInEdit = function() {
     const list = document.getElementById('new-mix-paths-list');
     if (window.tempMixPaths.length === 0) {
         list.innerHTML = "<p style='color:#777; font-size: 0.9rem;'>No paths added yet.</p>";
         return;
     }
-    list.innerHTML = window.tempMixPaths.map((p, i) => `
-        <div style="display: flex; justify-content: space-between; align-items: center; background: #2d2d2d; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px; border: 1px solid #444;">
-            <span style="font-family: monospace; color: #a5d6ff; word-break: break-all; margin-right: 15px; font-size: 0.85rem;">${p}</span>
-            <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; background: #cf6679; color: white; border-color: #cf6679;" onclick="removeMixPath(${i})">Remove</button>
+    list.innerHTML = window.tempMixPaths.map((p, i) => {
+        const isString = typeof p === 'string';
+        const pathObj = isString ? { path: p, exclude: false, generic: false } : p;
+        if (isString) window.tempMixPaths[i] = pathObj;
+        
+        const bgColor = pathObj.exclude ? '#3a1c1c' : '#2d2d2d';
+        const textColor = pathObj.exclude ? '#ff8a8a' : '#a5d6ff';
+        const typeText = pathObj.exclude ? (pathObj.generic ? 'Blacklisted (Generic)' : 'Blacklisted (Exact)') : 'Included';
+        
+        let displayPath = pathObj.path;
+        if (pathObj.exclude && pathObj.generic) {
+            displayPath = "**/" + pathObj.path.split(/[/\\]/).pop();
+        }
+
+        let genericBtn = '';
+        if (pathObj.exclude) {
+            genericBtn = `<button class="btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; margin-right: 8px;" onclick="toggleGeneric(${i})">${pathObj.generic ? 'Make Exact' : 'Make Generic'}</button>`;
+        }
+
+        return `
+        <div style="display: flex; justify-content: space-between; align-items: center; background: ${bgColor}; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px; border: 1px solid #444;">
+            <div style="display: flex; flex-direction: column; overflow: hidden; margin-right: 15px;">
+                <span style="font-size: 0.75rem; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 3px;">${typeText}</span>
+                <span style="font-family: monospace; color: ${textColor}; word-break: break-all; font-size: 0.85rem;">${displayPath}</span>
+            </div>
+            <div style="display: flex; gap: 5px; flex-shrink: 0; align-items: center;">
+                ${genericBtn}
+                <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; margin-right: 8px;" onclick="toggleExclude(${i})">${pathObj.exclude ? 'Set as Include' : 'Set as Blacklist'}</button>
+                <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; background: #cf6679; color: white; border-color: #cf6679;" onclick="removeMixPath(${i})">Remove</button>
+            </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 };
 
 window.editMix = function(mixId) {
@@ -664,7 +707,9 @@ window.editMix = function(mixId) {
     if (mix) {
         document.getElementById('current-mix-id').value = mix.id;
         document.getElementById('new-mix-name').value = mix.name;
-        window.tempMixPaths = [...(mix.paths || [])];
+        window.tempMixPaths = (mix.paths || []).map(p => 
+            typeof p === 'string' ? { path: p, exclude: false, generic: false } : { ...p }
+        );
         renderMixPathsInEdit();
         showScreen('screen-add-mix-details');
     }

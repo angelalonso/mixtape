@@ -15,6 +15,7 @@ $(TARGET): main.c server.h
 test: test_suite.c server.h
 	$(CC) $(CFLAGS) test_suite.c -o $(TEST_TARGET)
 	./$(TEST_TARGET)
+	rm -f $(TEST_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
