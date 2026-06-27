@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MixTape</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        
+        <div id="screen-main" class="screen">
+            <div class="menu-grid">
+                <div class="menu-row">
+                    <button class="btn-menu btn-half" onclick="showScreen('screen-mixes')">Mixes</button>
+                    <button class="btn-menu btn-half" onclick="showScreen('screen-tapes')">Tapes</button>
+                </div>
+                <button class="btn-menu" onclick="showScreen('screen-mix-tapes')">New MixTape</button>
+            </div>
+
+            <div class="card main-card" style="text-align: left; flex: 1; margin-top: 10px; margin-bottom: 10px;">
+                <h3 style="margin-top: 0; border-bottom: 1px solid #333; padding-bottom: 10px;">Existing Mix-Tapes</h3>
+                <ul id="mix-tapes-list" style="list-style-type: none; padding: 0; margin: 0;">
+                    <li style="color: #777; padding: 10px 0;">Loading Mix-Tapes...</li>
+                </ul>
+            </div>
+
+            <div class="bottom-row">
+                <button class="btn-secondary btn-config" onclick="goToConfigScreen()">Config</button>
+                <button class="btn-exit" onclick="confirmExitApp()">Exit</button>
+            </div>
+            
+            <p style="margin-top: 5px; color: #555; font-size: 0.85rem; margin-bottom: 0;">Press <kbd>Esc</kbd> anywhere to go back, or on this screen to Exit.</p>
+        </div>
+
+        <div id="screen-mixes" class="screen hidden">
+            <h1>Mixes Manager</h1>
+            <div class="card">
+                <h3>Mixes Collection</h3>
+                <button id="btn-add-mix" style="background: #03dac6; color: #000; margin-top: 10px; margin-bottom: 15px;" onclick="startNewMix()">Add New Mix</button>
+                <h3 style="margin-top: 20px;">Current Mixes:</h3>
+                <div id="mixes-list" style="text-align: left; margin-top: 10px; max-height: 250px; overflow-y: auto; background: #2d2d2d; padding: 10px; border-radius: 4px;"></div>
+            </div>
+            <button class="btn-secondary" onclick="showScreen('screen-main')">← Go Back <kbd>Esc</kbd></button>
+        </div>
+
+        <div id="screen-add-mix-details" class="screen hidden">
+            <h1>Configure Mix</h1>
+            <div class="card" style="text-align: left;">
+                <input type="hidden" id="current-mix-id" value="">
+                
+                <div style="margin-bottom: 20px;">
+                    <label for="new-mix-name" style="display: block; margin-bottom: 8px; font-weight: bold;">Mix Name:</label>
+                    <input type="text" id="new-mix-name" style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-size: 1rem;">
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 10px;">
+                        <label style="font-weight: bold; color: #777; margin: 0;">Assigned Files & Folders:</label>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button class="btn-secondary" onclick="addMixPaths()" style="margin: 0; white-space: nowrap; font-size: 0.85rem;">+ Add Files</button>
+                            <button class="btn-secondary" onclick="addMixFolders()" style="margin: 0; white-space: nowrap; font-size: 0.85rem;">+ Add Folders</button>
+                        </div>
+                    </div>
+                    <div id="new-mix-paths-list" style="max-height: 200px; overflow-y: auto; padding-right: 5px;">
+                        </div>
+                </div>
+                
+                <div style="display: flex; gap: 15px; margin-top: 25px;">
+                    <button id="btn-save-mix" onclick="saveNewMix()" style="margin-top: 0;">Save Mix</button>
+                    <button class="btn-secondary" onclick="showScreen('screen-mixes')" style="margin-top: 0;">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="screen-tapes" class="screen hidden">
+            <h1>Tapes Storage</h1>
+            <div class="card">
+                <h3>Storage Options</h3>
+                <button id="btn-add-tape" style="background: #03dac6; color: #000; margin-top: 10px; margin-bottom: 15px;" onclick="startNewTape()">Add New Tape</button>
+                <h3 style="margin-top: 20px;">Current Tapes:</h3>
+                <div id="tapes-list" style="text-align: left; margin-top: 10px; max-height: 250px; overflow-y: auto; background: #2d2d2d; padding: 10px; border-radius: 4px;"></div>
+            </div>
+            <button class="btn-secondary" onclick="showScreen('screen-main')">← Go Back <kbd>Esc</kbd></button>
+        </div>
+
+        <div id="screen-add-tape-details" class="screen hidden">
+            <h1>Configure Tape</h1>
+            <div class="card" style="text-align: left;">
+                <input type="hidden" id="current-tape-id" value="">
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #777;">Selected Folder Path:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <div id="new-tape-path" style="flex-grow: 1; font-family: monospace; background: #2d2d2d; padding: 12px; border-radius: 4px; color: #a5d6ff; word-break: break-all; border: 1px solid #444;"></div>
+                        <button class="btn-secondary" onclick="addTape()" style="margin: 0; white-space: nowrap;">Change Folder</button>
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label for="new-tape-name" style="display: block; margin-bottom: 8px; font-weight: bold;">Tape Name:</label>
+                    <input type="text" id="new-tape-name" style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-size: 1rem;">
+                </div>
+                
+                <div style="display: flex; gap: 15px; margin-top: 25px;">
+                    <button id="btn-save-tape" onclick="saveNewTape()" style="margin-top: 0;">Save Tape</button>
+                    <button class="btn-secondary" onclick="showScreen('screen-tapes')" style="margin-top: 0;">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="screen-mix-tapes" class="screen hidden">
+            <h1>New MixTape</h1>
+            <div class="card" style="text-align: left;">
+                <div style="margin-bottom: 20px;">
+                    <input type="hidden" id="current-mix-tape-id" value="">
+                    
+                    <div style="margin-bottom: 20px;">
+                        <label for="new-mix-tape-name" style="display: block; margin-bottom: 8px; font-weight: bold;">Mix-Tape Name:</label>
+                        <input type="text" id="new-mix-tape-name" style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-size: 1rem;">
+                    </div>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <label for="mix-tape-mix-select" style="display: block; margin-bottom: 8px; font-weight: bold;">Select Mix:</label>
+                        <select id="mix-tape-mix-select">
+                            <option value="">-- Select a Mix --</option>
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <label for="mix-tape-tape-select" style="display: block; margin-bottom: 8px; font-weight: bold;">Select Tape:</label>
+                        <select id="mix-tape-tape-select">
+                            <option value="">-- Select a Tape --</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div style="display: flex; gap: 15px; margin-top: 25px;">
+                    <button id="btn-save-mix-tape" onclick="saveMixTape()" style="margin-top: 0;">Save Mix-Tape</button>
+                    <button class="btn-secondary" onclick="showScreen('screen-main')" style="margin-top: 0;">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="screen-config" class="screen hidden">
+            <h1>System Configuration</h1>
+            <div id="status-card" class="card loading">
+                <p id="status-message">Loading configuration status...</p>
+            </div>
+            <div id="config-card" class="card hidden">
+                <h3>Current Configuration (cfg.yml):</h3>
+                <pre id="config-content"></pre>
+            </div>
+            <button class="btn-secondary" onclick="showScreen('screen-main')">← Go Back <kbd>Esc</kbd></button>
+        </div>
+
+        <div id="screen-confirm-exit" class="screen hidden">
+            <div class="card error" style="margin-top: 100px; padding: 40px;">
+                <h2>Exit Application?</h2>
+                <p>Are you sure you want to close the Configuration Manager?</p>
+                <div style="display: flex; gap: 20px; justify-content: center; margin-top: 25px;">
+                    <button style="background: #cf6679; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;" onclick="confirmExitApp()">Yes, Exit</button>
+                    <button class="btn-secondary" style="margin-top: 0;" onclick="showScreen('screen-main')">No, Stay <kbd>Esc</kbd></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete blocked dialog -->
+        <div id="screen-delete-blocked" class="screen hidden">
+            <div class="card error" style="margin-top: 100px; padding: 40px;">
+                <h2>Cannot Delete</h2>
+                <p id="delete-blocked-message">This item is in use by one or more Mix-Tapes and cannot be deleted.</p>
+                <div style="display: flex; gap: 20px; justify-content: center; margin-top: 25px;">
+                    <button class="btn-secondary" style="margin-top: 0;" onclick="goBackFromDeleteBlocked()">Go Back</button>
+                    <button class="btn-secondary" style="margin-top: 0;" onclick="showScreen('screen-main')">Go to Main Screen</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

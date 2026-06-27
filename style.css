@@ -1,0 +1,192 @@
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; padding: 10px; margin: 0; height: 100vh; }
+.container { width: 100%; max-width: 1000px; display: flex; flex-direction: column; height: calc(100vh - 5px); }
+
+html, body { height: 100%; }
+
+.card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+.error { border-color: #cf6679; }
+.success { border-color: #03dac6; }
+pre { text-align: left; background: #2d2d2d; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; color: #a5d6ff; }
+
+button { background: #03dac6; color: #000; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 15px; }
+button:hover { background: #01bfa5; }
+
+.menu-grid { display: flex; flex-direction: column; gap: 10px; margin-top: 0; flex-shrink: 0; }
+.menu-row { display: flex; gap: 10px; }
+.btn-menu { background: #1f3a60; color: #fff; font-size: 1.2rem; padding: 16px; border: 1px solid #3a5fcd; border-radius: 6px; width: 100%; cursor: pointer; }
+.btn-menu:hover { background: #2a4d7c; }
+.btn-half { width: 50%; }
+
+.main-card { flex: 1; min-height: 0; overflow-y: auto; margin: 10px 0; display: flex; flex-direction: column; padding: 15px; }
+.main-card h3 { margin-top: 0; border-bottom: 1px solid #333; padding-bottom: 10px; flex-shrink: 0; }
+#mix-tapes-list { flex: 1; overflow-y: auto; }
+
+.bottom-row { display: flex; justify-content: space-between; align-items: center; margin-top: 0; gap: 10px; flex-shrink: 0; }
+.btn-config { background: #333333; color: #e0e0e0; border: 1px solid #555; font-size: 0.95rem; margin: 0; padding: 8px 24px; width: auto; cursor: pointer; }
+.btn-config:hover { background: #444444; }
+.btn-exit { background: transparent; color: #cf6679; border: 1px solid #cf6679; font-size: 0.95rem; margin: 0; padding: 8px 24px; width: auto; cursor: pointer; }
+.btn-exit:hover { background: #cf6679; color: #fff; }
+
+.btn-secondary { background: #333333; color: #e0e0e0; border: 1px solid #555; font-size: 0.95rem; cursor: pointer; }
+.btn-secondary:hover { background: #444444; }
+
+.btn-danger { background: #cf6679; color: #fff; border: 1px solid #cf6679; font-size: 0.85rem; padding: 6px 14px; cursor: pointer; border-radius: 4px; margin: 0; }
+.btn-danger:hover { background: #b05a6e; }
+
+.btn-unavailable { background: #cf6679; color: #fff; border: 1px solid #cf6679; font-size: 0.75rem; padding: 4px 12px; border-radius: 4px; cursor: not-allowed; opacity: 0.8; }
+
+kbd { background: #444; color: #fff; border: 1px solid #666; border-radius: 3px; padding: 1px 5px; font-size: 0.8rem; margin-left: 5px; font-family: monospace; }
+
+.hidden { display: none !important; }
+.screen { transition: opacity 0.2s ease-in-out; display: flex; flex-direction: column; height: 100%; }
+
+#screen-main { height: 100%; }
+
+#screen-mixes, #screen-tapes, #screen-add-mix-details, #screen-add-tape-details, #screen-mix-tapes, #screen-config, #screen-confirm-exit, #screen-delete-blocked {
+    height: 100%;
+    justify-content: flex-start;
+}
+
+.mixtape-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 5px;
+    border-bottom: 1px solid #2a2a2a;
+}
+.mixtape-item:last-child {
+    border-bottom: none;
+}
+.mixtape-label {
+    font-size: 1.05rem;
+    color: #e0e0e0;
+}
+.btn-trigger-action {
+    margin-top: 0;
+    padding: 6px 16px;
+    font-size: 0.85rem;
+    background: #3a5fcd;
+    color: #fff;
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
+}
+.btn-trigger-action:hover {
+    background: #4a6fdd;
+}
+.btn-trigger-action:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#mix-tapes-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 5px;
+    border-bottom: 1px solid #2a2a2a;
+}
+#mix-tapes-list li:last-child {
+    border-bottom: none;
+}
+#mix-tapes-list .apply-btn {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    background: #03dac6;
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+}
+#mix-tapes-list .apply-btn:hover {
+    background: #01bfa5;
+}
+#mix-tapes-list .apply-btn:disabled {
+    background: #cf6679;
+    color: #fff;
+    cursor: not-allowed;
+    opacity: 0.8;
+}
+#mix-tapes-list .edit-btn {
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    background: #333333;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+}
+#mix-tapes-list .edit-btn:hover {
+    background: #444444;
+}
+#mix-tapes-list .delete-btn {
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    background: #cf6679;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+#mix-tapes-list .delete-btn:hover {
+    background: #b05a6e;
+}
+
+select {
+    width: 100% !important;
+    padding: 12px !important;
+    background: #1e1e1e !important;
+    border: 1px solid #666 !important;
+    color: #ffffff !important;
+    border-radius: 4px !important;
+    box-sizing: border-box !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+}
+
+select option {
+    background: #1e1e1e !important;
+    color: #ffffff !important;
+    padding: 8px !important;
+}
+
+select option:checked {
+    background: #1f3a60 !important;
+    color: #ffffff !important;
+}
+
+select option:hover {
+    background: #3a5fcd !important;
+    color: #ffffff !important;
+}
+
+select:focus {
+    outline: none !important;
+    border-color: #03dac6 !important;
+    box-shadow: 0 0 8px rgba(3, 218, 198, 0.3) !important;
+}
+
+#screen-mix-tapes select {
+    background: #1e1e1e !important;
+    color: #ffffff !important;
+    border-color: #666 !important;
+}
+
+#screen-mix-tapes select option {
+    background: #1e1e1e !important;
+    color: #ffffff !important;
+}
+
+#screen-mix-tapes select option:checked {
+    background: #1f3a60 !important;
+    color: #ffffff !important;
+}
+
+#screen-mix-tapes select option:hover {
+    background: #3a5fcd !important;
+    color: #ffffff !important;
+}

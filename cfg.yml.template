@@ -1,0 +1,3 @@
+data_type: file
+data_file: data.txt
+tape_check_interval: 5
