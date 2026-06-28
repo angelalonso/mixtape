@@ -232,10 +232,9 @@ function renderMixTapesList() {
         
         if (isRunning) {
             const op = window.rsyncOperations[mt.id];
-            if (op.totalBatches > 0) {
-                const progress = Math.round((op.completedBatches / op.totalBatches) * 100);
-                const activeBatch = op.currentBatch !== undefined ? op.currentBatch + 1 : "?";
-                progressInfo = ` ${progress}% (batch ${activeBatch}/${op.totalBatches})`;
+            if (op.totalCommands > 0) {
+                const progress = Math.round((op.completedCommands / op.totalCommands) * 100);
+                progressInfo = ` ${progress}% (${op.completedCommands}/${op.totalCommands})`;
                 applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #ff9800; color: #000;" disabled>Running${progressInfo}</button>`;
             } else {
                 applyButton = `<button class="btn-trigger-action" style="padding: 4px 12px; font-size: 0.75rem; background: #ff9800; color: #000;" disabled>Running...</button>`;
@@ -256,8 +255,8 @@ function renderMixTapesList() {
                         ${mixName} -> ${tapeName}
                     </span>
                     ${!isAvailable ? `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(Tape not mounted)</span>` : ''}
-                    ${isRunning && window.rsyncOperations[mt.id] && window.rsyncOperations[mt.id].failedBatches > 0 ? 
-                        `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(${window.rsyncOperations[mt.id].failedBatches} failed)</span>` : ''}
+                    ${isRunning && window.rsyncOperations[mt.id] && window.rsyncOperations[mt.id].failedCommands > 0 ? 
+                        `<span style="color: #cf6679; font-size: 0.8rem; margin-left: 10px;">(${window.rsyncOperations[mt.id].failedCommands} failed)</span>` : ''}
                 </div>
             </div>
             <div style="display: flex; gap: 10px;">
@@ -441,6 +440,40 @@ window.deleteMixTape = function(mixTapeId) {
     }
 };
 
+/*
+ * Distribute sourcePaths across numWorkers buckets using round-robin.
+ *
+ * Example: 5 paths, 2 workers =>
+ *   bucket[0] = [path0, path2, path4]
+ *   bucket[1] = [path1, path3]
+ *
+ * If numWorkers > sourcePaths.length, only as many buckets as there are
+ * paths are used, so we never spawn empty rsync commands.
+ */
+function distributePathsRoundRobin(sourcePaths, numWorkers) {
+    const actualWorkers = Math.min(numWorkers, sourcePaths.length);
+    const buckets = Array.from({ length: actualWorkers }, () => []);
+    for (let i = 0; i < sourcePaths.length; i++) {
+        buckets[i % actualWorkers].push(sourcePaths[i]);
+    }
+    return buckets;
+}
+
+/*
+ * Read the worker count that was reported back from the C side when config
+ * was loaded.  Falls back to navigator.hardwareConcurrency (number of logical
+ * CPUs visible to the browser context) and then to 1 if neither is available.
+ */
+function getWorkerCount() {
+    if (window._rsyncWorkerCount && window._rsyncWorkerCount > 0) {
+        return window._rsyncWorkerCount;
+    }
+    if (navigator.hardwareConcurrency && navigator.hardwareConcurrency > 0) {
+        return navigator.hardwareConcurrency;
+    }
+    return 1;
+}
+
 window.applyMixTape = function(mixTapeId) {
     if (window.rsyncOperations[mixTapeId] && window.rsyncOperations[mixTapeId].running) {
         alert("Rsync is already running for this Mix-Tape. Please wait.");
@@ -482,32 +515,35 @@ window.applyMixTape = function(mixTapeId) {
     }
     
     const destPath = tape.path;
-    const MAX_PATHS_PER_BATCH = 20;
-    
-    const batches = [];
-    for (let i = 0; i < sourcePaths.length; i += MAX_PATHS_PER_BATCH) {
-        batches.push(sourcePaths.slice(i, i + MAX_PATHS_PER_BATCH));
-    }
-    
-    const totalBatches = batches.length;
-    let completedBatches = 0;
-    let failedBatches = 0;
+    const numWorkers = getWorkerCount();
+
+    /*
+     * Distribute paths across workers using round-robin.
+     * Each bucket becomes one rsync command, run in parallel by the C thread pool.
+     *
+     * Example: 3 paths, 2 workers
+     *   command 0: path0 path2 -> dest/
+     *   command 1: path1       -> dest/
+     */
+    const buckets = distributePathsRoundRobin(sourcePaths, numWorkers);
+    const totalCommands = buckets.length;
+    let completedCommands = 0;
+    let failedCommands = 0;
     let errorMessages = [];
     
-    // Initialize operation tracking with progress info
+    // Initialize operation tracking
     window.rsyncOperations[mixTapeId] = {
         running: true,
         started: Date.now(),
-        totalBatches: totalBatches,
-        completedBatches: 0,
-        failedBatches: 0,
-        currentBatch: null
+        totalCommands: totalCommands,
+        completedCommands: 0,
+        failedCommands: 0
     };
     renderLists();
     
-    console.log(`[Mix-Tape: ${mixTape.name}] Starting rsync of ${sourcePaths.length} path(s) in ${totalBatches} batch(es) to ${destPath}`);
+    console.log(`[Mix-Tape: ${mixTape.name}] Starting rsync of ${sourcePaths.length} path(s) across ${totalCommands} command(s) (${numWorkers} worker(s)) to ${destPath}`);
     
-    batches.forEach((batch, batchIndex) => {
+    buckets.forEach((bucket, cmdIndex) => {
         let cmd = "rsync -av";
         
         excludePaths.forEach(ex => {
@@ -519,51 +555,44 @@ window.applyMixTape = function(mixTapeId) {
             }
         });
 
-        batch.forEach(path => {
+        bucket.forEach(path => {
             cmd += ` '${path}'`;
         });
         cmd += ` '${destPath}/'`;
         
-        const cmdId = `${mixTapeId}-batch-${batchIndex}`;
-        
-        // Update current batch in progress tracking
-        if (window.rsyncOperations[mixTapeId]) {
-            window.rsyncOperations[mixTapeId].currentBatch = batchIndex;
-            renderLists();
-        }
+        const cmdId = `${mixTapeId}-cmd-${cmdIndex}`;
         
         window.rsyncCallbacks = window.rsyncCallbacks || {};
         window.rsyncCallbacks[cmdId] = function(result, output) {
-            completedBatches++;
+            completedCommands++;
             if (result !== "success") {
-                failedBatches++;
-                errorMessages.push(`Batch ${batchIndex+1}: ${result}`);
+                failedCommands++;
+                errorMessages.push(`Command ${cmdIndex + 1}: ${result}`);
             }
             
             // Update progress tracking
             if (window.rsyncOperations[mixTapeId]) {
-                window.rsyncOperations[mixTapeId].completedBatches = completedBatches;
-                window.rsyncOperations[mixTapeId].failedBatches = failedBatches;
+                window.rsyncOperations[mixTapeId].completedCommands = completedCommands;
+                window.rsyncOperations[mixTapeId].failedCommands = failedCommands;
                 renderLists();
             }
             
-            console.log(`[Mix-Tape: ${mixTape.name}] Batch ${batchIndex+1}/${totalBatches}: ${result}`);
+            console.log(`[Mix-Tape: ${mixTape.name}] Command ${cmdIndex + 1}/${totalCommands} (${bucket.length} path(s)): ${result}`);
             if (output) {
                 console.log(`Output: ${output}`);
             }
             
-            if (completedBatches === totalBatches) {
-                // Operation complete - keep the operation object for 30 seconds to show completion status
+            if (completedCommands === totalCommands) {
                 if (window.rsyncOperations[mixTapeId]) {
                     window.rsyncOperations[mixTapeId].running = false;
                     window.rsyncOperations[mixTapeId].completed = Date.now();
                     renderLists();
                 }
                 
-                const successCount = totalBatches - failedBatches;
+                const successCount = totalCommands - failedCommands;
                 let summary = `Rsync completed for "${mixTape.name}":\n`;
-                summary += `${successCount} batch(es) succeeded, ${failedBatches} failed.\n`;
-                if (failedBatches > 0) {
+                summary += `${successCount} command(s) succeeded, ${failedCommands} failed.\n`;
+                if (failedCommands > 0) {
                     summary += `\nErrors:\n${errorMessages.join('\n')}`;
                 }
                 console.log(`[Mix-Tape: ${mixTape.name}] ${summary}`);

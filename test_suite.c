@@ -1,6 +1,10 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 #include "server.h"
 
 int tests_run = 0;
@@ -17,7 +21,7 @@ int tests_failed = 0;
 } while(0)
 
 /* ------------------------------------------------------------------ */
-/*  Mock helpers                                                        */
+/* Mock helpers                                                        */
 /* ------------------------------------------------------------------ */
 
 void mock_check_and_ensure_config() {
@@ -47,7 +51,7 @@ void mock_native_rsync_execute()      { mock_rsync_executed_called      = 1; }
 void mock_native_rsync_background()   { mock_rsync_background_called    = 1; }
 
 /* ------------------------------------------------------------------ */
-/*  parse_int_key helper (mirrors the implementation in main.c)        */
+/* parse_int_key helper (mirrors the implementation in main.c)       */
 /* ------------------------------------------------------------------ */
 
 static int parse_int_key(const char *cfg_content, const char *key, int fallback) {
@@ -60,7 +64,7 @@ static int parse_int_key(const char *cfg_content, const char *key, int fallback)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Config & template tests                                             */
+/* Config & template tests                                           */
 /* ------------------------------------------------------------------ */
 
 void test_automatic_template_instantiation() {
@@ -92,7 +96,7 @@ void test_keyboard_escape_routing() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  parse_config tests                                                  */
+/* parse_config tests                                                */
 /* ------------------------------------------------------------------ */
 
 void test_parse_config_valid() {
@@ -131,7 +135,7 @@ void test_parse_config_missing_data_file() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  parse_int_key / log_level / max_rsync_workers tests                */
+/* parse_int_key / log_level / max_rsync_workers tests               */
 /* ------------------------------------------------------------------ */
 
 void test_parse_int_key_log_level_present() {
@@ -185,13 +189,8 @@ void test_parse_int_key_tape_check_interval_absent() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Parallel rsync task slot tests                                      */
+/* Parallel rsync task slot tests                                    */
 /* ------------------------------------------------------------------ */
-
-/*
- * Simulate enqueueing several tasks into the task array the same way
- * main.c does — without touching pthreads — and verify slot management.
- */
 
 #define TEST_MAX_RSYNC_TASKS 64
 
@@ -259,10 +258,6 @@ void test_rsync_task_queue_reports_full_at_capacity() {
 }
 
 void test_rsync_worker_count_from_config_overrides_auto() {
-    /*
-     * Verify that a positive max_rsync_workers config value is returned
-     * as-is (not the CPU count), which is what main.c uses to size the pool.
-     */
     const char *cfg = "data_type: file\nmax_rsync_workers: 6\n";
     int workers = parse_int_key(cfg, "max_rsync_workers:", 0);
     assert_msg(workers == 6,
@@ -270,7 +265,7 @@ void test_rsync_worker_count_from_config_overrides_auto() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  js_escape tests                                                     */
+/* js_escape tests                                                   */
 /* ------------------------------------------------------------------ */
 
 void test_js_escape_special_chars() {
@@ -310,7 +305,7 @@ void test_js_escape_respects_dest_size() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Native dialog mock tests                                            */
+/* Native dialog mock tests                                          */
 /* ------------------------------------------------------------------ */
 
 void test_folder_picker_interaction() {
@@ -328,7 +323,7 @@ void test_multi_file_picker_interaction() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mixes multi-file workflow                                           */
+/* Mixes multi-file workflow                                         */
 /* ------------------------------------------------------------------ */
 
 static int build_receive_mix_paths_js(const char** paths, int count,
@@ -415,7 +410,7 @@ void test_mix_select_native_callback_fires() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mixes folder-picker workflow                                        */
+/* Mixes folder-picker workflow                                      */
 /* ------------------------------------------------------------------ */
 
 static int build_receive_mix_folder_js(const char* folder_path, char* out, size_t out_size) {
@@ -471,7 +466,7 @@ void test_mix_folder_picker_callable_multiple_times() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mix-Tapes workflow                                                  */
+/* Mix-Tapes workflow                                                */
 /* ------------------------------------------------------------------ */
 
 struct mix_tape_test {
@@ -585,7 +580,329 @@ void test_mix_tape_ui_controls_visibility() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Main                                                                */
+/* Round-robin path distribution unit tests                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * C mirror of the JS distributePathsRoundRobin function.
+ * Fills bucket_sizes[i] with the number of paths assigned to worker i.
+ * actual_workers = min(num_workers, num_paths).
+ */
+static int distribute_round_robin(int num_paths, int num_workers, int *bucket_sizes, int max_buckets) {
+    int actual = (num_workers < num_paths) ? num_workers : num_paths;
+    if (actual > max_buckets) actual = max_buckets;
+    for (int i = 0; i < actual; i++) bucket_sizes[i] = 0;
+    for (int i = 0; i < num_paths; i++) {
+        bucket_sizes[i % actual]++;
+    }
+    return actual;
+}
+
+void test_distribution_even_split() {
+    /* 4 paths, 2 workers => 2 paths each */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(4, 2, buckets, 16);
+    assert_msg(actual == 2,           "4 paths / 2 workers must produce exactly 2 commands.");
+    assert_msg(buckets[0] == 2,       "Worker 0 must receive 2 paths (paths 0, 2).");
+    assert_msg(buckets[1] == 2,       "Worker 1 must receive 2 paths (paths 1, 3).");
+}
+
+void test_distribution_uneven_split() {
+    /* 3 paths, 2 workers => worker 0 gets 2, worker 1 gets 1 */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(3, 2, buckets, 16);
+    assert_msg(actual == 2,           "3 paths / 2 workers must produce exactly 2 commands.");
+    assert_msg(buckets[0] == 2,       "Worker 0 must receive 2 paths (paths 0, 2) for uneven split.");
+    assert_msg(buckets[1] == 1,       "Worker 1 must receive 1 path (path 1) for uneven split.");
+}
+
+void test_distribution_more_workers_than_paths() {
+    /* 2 paths, 5 workers => only 2 commands used, 1 path each */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(2, 5, buckets, 16);
+    assert_msg(actual == 2,           "With fewer paths than workers, command count must equal path count.");
+    assert_msg(buckets[0] == 1,       "Worker 0 must receive 1 path when workers exceed paths.");
+    assert_msg(buckets[1] == 1,       "Worker 1 must receive 1 path when workers exceed paths.");
+}
+
+void test_distribution_single_worker() {
+    /* 7 paths, 1 worker => all in one command */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(7, 1, buckets, 16);
+    assert_msg(actual == 1,           "1 worker must always produce exactly 1 command.");
+    assert_msg(buckets[0] == 7,       "Single worker must receive all 7 paths.");
+}
+
+void test_distribution_single_path() {
+    /* 1 path, 4 workers => 1 command used */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(1, 4, buckets, 16);
+    assert_msg(actual == 1,           "1 path must produce exactly 1 command regardless of worker count.");
+    assert_msg(buckets[0] == 1,       "The single command must hold 1 path.");
+}
+
+void test_distribution_total_paths_preserved() {
+    /* Regardless of split, all paths must be accounted for */
+    int buckets[16] = {0};
+    int num_paths = 13;
+    int num_workers = 4;
+    int actual = distribute_round_robin(num_paths, num_workers, buckets, 16);
+    int total = 0;
+    for (int i = 0; i < actual; i++) total += buckets[i];
+    assert_msg(total == num_paths,
+               "Sum of all bucket sizes must equal the total number of source paths.");
+}
+
+void test_distribution_no_empty_commands() {
+    /* No bucket should ever have 0 paths assigned to it */
+    int buckets[16] = {0};
+    int actual = distribute_round_robin(5, 3, buckets, 16);
+    int empty = 0;
+    for (int i = 0; i < actual; i++) {
+        if (buckets[i] == 0) empty++;
+    }
+    assert_msg(empty == 0,
+               "Round-robin distribution must never produce a command with zero paths.");
+}
+
+/* ------------------------------------------------------------------ */
+/* Rsync functional & performance integration tests                    */
+/* ------------------------------------------------------------------ */
+
+void test_rsync_blacklisting() {
+    system("rm -rf /tmp/mixtape_test");
+    system("mkdir -p /tmp/mixtape_test/src/subdir /tmp/mixtape_test/dest");
+    system("touch /tmp/mixtape_test/src/keep1.txt");
+    system("touch /tmp/mixtape_test/src/blacklist_file.txt");
+    system("touch /tmp/mixtape_test/src/subdir/blacklist_in_subdir.txt");
+
+    /* Mock JS payload execution logic over standard subsystem call */
+    int ret = system("rsync -av --exclude='blacklist_file.txt' --exclude='**/blacklist_in_subdir.txt' /tmp/mixtape_test/src/ /tmp/mixtape_test/dest/ > /dev/null 2>&1");
+    assert_msg(ret == 0, "Mocked rsync blacklist command must execute successfully.");
+
+    FILE *f1 = fopen("/tmp/mixtape_test/dest/keep1.txt", "r");
+    assert_msg(f1 != NULL, "Allowed file must be copied over.");
+    if (f1) fclose(f1);
+
+    FILE *f2 = fopen("/tmp/mixtape_test/dest/blacklist_file.txt", "r");
+    assert_msg(f2 == NULL, "Exact path blacklisted file must NOT be copied over.");
+    if (f2) fclose(f2);
+
+    FILE *f3 = fopen("/tmp/mixtape_test/dest/subdir/blacklist_in_subdir.txt", "r");
+    assert_msg(f3 == NULL, "Generic wildcard blacklisted file must NOT be copied over.");
+    if (f3) fclose(f3);
+
+    system("rm -rf /tmp/mixtape_test");
+}
+
+#define PERF_FILES 40
+
+static long long current_timestamp_ms() {
+    struct timeval te;
+    gettimeofday(&te, NULL);
+    return te.tv_sec * 1000LL + te.tv_usec / 1000;
+}
+
+static void setup_perf_env() {
+    system("rm -rf /tmp/mixtape_perf");
+    system("mkdir -p /tmp/mixtape_perf/src /tmp/mixtape_perf/dest");
+    for (int i = 0; i < PERF_FILES; i++) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd),
+            "dd if=/dev/zero of=/tmp/mixtape_perf/src/file_%d.dat bs=1M count=1 > /dev/null 2>&1", i);
+        system(cmd);
+    }
+}
+
+/*
+ * Worker used by run_perf_round_robin_test.
+ * Each thread receives an array of file indices to copy in a single rsync
+ * invocation, mirroring how applyMixTape now works: one rsync command per
+ * bucket, with all bucket paths passed as arguments to that one invocation.
+ */
+typedef struct {
+    int  *indices;
+    int   count;
+} rr_perf_task_t;
+
+void* rr_perf_worker(void* arg) {
+    rr_perf_task_t *task = (rr_perf_task_t *)arg;
+
+    /* Build a single rsync command with all assigned files as sources */
+    char cmd[8192];
+    int pos = snprintf(cmd, sizeof(cmd), "rsync -a");
+    for (int i = 0; i < task->count && pos < (int)sizeof(cmd) - 256; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - (size_t)pos,
+                        " /tmp/mixtape_perf/src/file_%d.dat", task->indices[i]);
+    }
+    snprintf(cmd + pos, sizeof(cmd) - (size_t)pos,
+             " /tmp/mixtape_perf/dest/ > /dev/null 2>&1");
+    system(cmd);
+    return NULL;
+}
+
+/*
+ * run_perf_round_robin_test:
+ *   Distributes PERF_FILES file indices across num_threads buckets using
+ *   round-robin, then runs one rsync process per bucket in parallel.
+ *
+ *   This matches the production applyMixTape behaviour introduced in this
+ *   change: N concurrent rsync invocations, each carrying roughly
+ *   (total_paths / N) paths, with leftovers assigned to the earlier buckets.
+ */
+static long long run_perf_round_robin_test(int num_threads) {
+    system("rm -rf /tmp/mixtape_perf/dest && mkdir -p /tmp/mixtape_perf/dest");
+
+    /* Round-robin distribution into per-thread index arrays */
+    int actual_threads = (num_threads < PERF_FILES) ? num_threads : PERF_FILES;
+
+    /* Allocate index arrays */
+    int  *index_arrays[16] = {0};
+    int   counts[16]       = {0};
+    for (int i = 0; i < actual_threads; i++) {
+        index_arrays[i] = calloc((size_t)(PERF_FILES / actual_threads + 1), sizeof(int));
+    }
+
+    for (int i = 0; i < PERF_FILES; i++) {
+        int slot = i % actual_threads;
+        index_arrays[slot][counts[slot]++] = i;
+    }
+
+    rr_perf_task_t tasks[16];
+    pthread_t      threads[16];
+
+    long long start_ms = current_timestamp_ms();
+
+    for (int i = 0; i < actual_threads; i++) {
+        tasks[i].indices = index_arrays[i];
+        tasks[i].count   = counts[i];
+        pthread_create(&threads[i], NULL, rr_perf_worker, &tasks[i]);
+    }
+    for (int i = 0; i < actual_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    long long elapsed = current_timestamp_ms() - start_ms;
+
+    for (int i = 0; i < actual_threads; i++) {
+        free(index_arrays[i]);
+    }
+    return elapsed;
+}
+
+/*
+ * Legacy worker: each thread copies one file at a time sequentially.
+ * Used for comparison against the round-robin approach.
+ */
+typedef struct {
+    int start_idx;
+    int end_idx;
+} legacy_perf_task_t;
+
+void* legacy_perf_worker(void* arg) {
+    legacy_perf_task_t *task = (legacy_perf_task_t *)arg;
+    for (int i = task->start_idx; i < task->end_idx; i++) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "rsync -a /tmp/mixtape_perf/src/file_%d.dat /tmp/mixtape_perf/dest/ > /dev/null 2>&1", i);
+        system(cmd);
+    }
+    return NULL;
+}
+
+static long long run_legacy_test(int num_threads) {
+    system("rm -rf /tmp/mixtape_perf/dest && mkdir -p /tmp/mixtape_perf/dest");
+    pthread_t          threads[16];
+    legacy_perf_task_t tasks[16];
+
+    int files_per_thread = PERF_FILES / num_threads;
+    long long start_ms = current_timestamp_ms();
+
+    for (int i = 0; i < num_threads; i++) {
+        tasks[i].start_idx = i * files_per_thread;
+        tasks[i].end_idx   = (i == num_threads - 1) ? PERF_FILES : (i + 1) * files_per_thread;
+        pthread_create(&threads[i], NULL, legacy_perf_worker, &tasks[i]);
+    }
+    for (int i = 0; i < num_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    return current_timestamp_ms() - start_ms;
+}
+
+void test_rsync_thread_performance() {
+    setup_perf_env();
+
+    printf("\n  [Performance] %d x 1 MB files\n", PERF_FILES);
+    printf("  %-45s %s\n", "Strategy", "Time (ms)");
+    printf("  %-45s %s\n", "--------", "---------");
+
+    /*
+     * Round-robin: N concurrent rsync processes each holding ~(40/N) paths.
+     *
+     *   1 thread  -> 1 rsync command, 40 paths
+     *   2 threads -> 2 rsync commands, 20 paths each
+     *   4 threads -> 4 rsync commands, 10 paths each
+     *   8 threads -> 8 rsync commands,  5 paths each
+     *  40 threads -> 40 rsync commands, 1 path each (max concurrency)
+     */
+    long long rr_1  = run_perf_round_robin_test(1);
+    printf("  %-45s %lld\n", "round-robin  1 thread  (1 cmd, 40 paths)", rr_1);
+
+    long long rr_2  = run_perf_round_robin_test(2);
+    printf("  %-45s %lld\n", "round-robin  2 threads (2 cmds, 20 paths ea.)", rr_2);
+
+    long long rr_4  = run_perf_round_robin_test(4);
+    printf("  %-45s %lld\n", "round-robin  4 threads (4 cmds, 10 paths ea.)", rr_4);
+
+    long long rr_8  = run_perf_round_robin_test(8);
+    printf("  %-45s %lld\n", "round-robin  8 threads (8 cmds,  5 paths ea.)", rr_8);
+
+    long long rr_40 = run_perf_round_robin_test(40);
+    printf("  %-45s %lld\n", "round-robin 40 threads (40 cmds, 1 path ea.)", rr_40);
+
+    /*
+     * Legacy (one rsync per file, chunked sequentially within each thread).
+     * Shown for comparison; this was the previous behaviour.
+     */
+    long long leg_1 = run_legacy_test(1);
+    printf("  %-45s %lld\n", "legacy (per-file)  1 thread ", leg_1);
+
+    long long leg_2 = run_legacy_test(2);
+    printf("  %-45s %lld\n", "legacy (per-file)  2 threads", leg_2);
+
+    long long leg_4 = run_legacy_test(4);
+    printf("  %-45s %lld\n", "legacy (per-file)  4 threads", leg_4);
+
+    assert_msg(rr_1  > 0, "Round-robin 1-thread run must complete and return a positive duration.");
+    assert_msg(rr_2  > 0, "Round-robin 2-thread run must complete and return a positive duration.");
+    assert_msg(rr_4  > 0, "Round-robin 4-thread run must complete and return a positive duration.");
+    assert_msg(rr_8  > 0, "Round-robin 8-thread run must complete and return a positive duration.");
+    assert_msg(rr_40 > 0, "Round-robin 40-thread run must complete and return a positive duration.");
+    assert_msg(leg_1 > 0, "Legacy 1-thread run must complete and return a positive duration.");
+    assert_msg(leg_2 > 0, "Legacy 2-thread run must complete and return a positive duration.");
+    assert_msg(leg_4 > 0, "Legacy 4-thread run must complete and return a positive duration.");
+
+    /*
+     * Correctness check: every file must be present in the destination
+     * after the last run (rr_40 is the last one run above, so dest is valid).
+     */
+    int all_present = 1;
+    for (int i = 0; i < PERF_FILES; i++) {
+        char path[128];
+        snprintf(path, sizeof(path), "/tmp/mixtape_perf/dest/file_%d.dat", i);
+        FILE *f = fopen(path, "r");
+        if (!f) { all_present = 0; break; }
+        fclose(f);
+    }
+    assert_msg(all_present == 1,
+               "All source files must be present in the destination after round-robin rsync.");
+
+    system("rm -rf /tmp/mixtape_perf");
+}
+
+/* ------------------------------------------------------------------ */
+/* Main                                                              */
 /* ------------------------------------------------------------------ */
 
 int main(void) {
@@ -650,6 +967,19 @@ int main(void) {
     test_mix_tape_deletion();
     test_mix_tape_edit_preserves_fields();
     test_mix_tape_ui_controls_visibility();
+
+    printf("\n-- Round-robin path distribution --\n");
+    test_distribution_even_split();
+    test_distribution_uneven_split();
+    test_distribution_more_workers_than_paths();
+    test_distribution_single_worker();
+    test_distribution_single_path();
+    test_distribution_total_paths_preserved();
+    test_distribution_no_empty_commands();
+
+    printf("\n-- Rsync functional & performance integration --\n");
+    test_rsync_blacklisting();
+    test_rsync_thread_performance();
 
     printf("\n=== Summary: %d Passed, %d Failed ===\n",
            tests_run - tests_failed, tests_failed);

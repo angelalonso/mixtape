@@ -37,4 +37,44 @@ On first run, `cfg.yml` is created automatically from `cfg.yml.template` (or wri
 | `data_file`          | `data.json` | Path to the JSON file that persists mixes, tapes, and mix-tapes.  |
 | `tape_check_interval`| `5`         | Seconds between automatic tape availability checks.               |
 | `log_level`          | `2`         | `0` off, `1` errors, `2` info, `3` verbose (all rsync output).   |
-| `max_rsync_workers`  | `0`         | Parallel rsync threads. `0` = one thread per logical CPU.         |
+| `max_rsync_workers`  | `0`         | Parallel rsync processes. `0` = one per logical CPU.              |
+
+## Parallelism model
+
+When you press Apply on a Mix-Tape, the source paths from the Mix are distributed across worker slots using **round-robin assignment**, then all workers are dispatched concurrently to the C thread pool.
+
+### Why round-robin instead of chunking
+
+The previous approach split paths into fixed-size batches of up to 20 and ran batches sequentially. This meant that with, say, 21 paths and 4 available threads, 3 threads sat idle while 2 batches ran one after the other.
+
+Round-robin distributes paths as evenly as possible across exactly `max_rsync_workers` slots (or as many slots as there are paths, whichever is smaller), then fires all of them at once. The C thread pool picks them up immediately. No thread sits idle waiting for a previous batch to finish.
+
+### How paths are distributed
+
+Given P source paths and W workers (W = min(max_rsync_workers, P)):
+
+```
+path[0]  -> command 0
+path[1]  -> command 1
+...
+path[W-1] -> command W-1
+path[W]   -> command 0   (wraps)
+path[W+1] -> command 1
+...
+```
+
+Each command receives `floor(P/W)` paths, with the first `P mod W` commands receiving one extra path. No command is ever empty.
+
+### Note on rsync's own parallelism
+
+rsync itself is single-threaded per invocation and has no built-in parallel flag. Tools like GNU `parallel` can wrap it, but they are not guaranteed to be present. MixTape therefore achieves parallelism by launching multiple rsync processes simultaneously, one per worker bucket.
+
+### Practical guidance for `max_rsync_workers`
+
+| Scenario | Suggested value |
+|---|---|
+| Single spinning hard drive destination | `1` — concurrent writes thrash the head |
+| SSD or NVMe destination | `0` (auto, = CPU count) or `4`–`8` |
+| Network destination (NAS, SMB) | `2`–`4`; higher values often saturate the link without saving time |
+| Very large number of small files | Higher values help because rsync startup overhead dominates |
+| Small number of large files | `1` or `2`; parallelism helps less than sequential throughput |

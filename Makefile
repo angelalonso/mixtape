@@ -13,7 +13,7 @@ $(TARGET): main.c server.h
 	$(CC) $(CFLAGS) main.c -o $(TARGET) $(WEBVIEW_FLAGS)
 
 test: test_suite.c server.h
-	$(CC) $(CFLAGS) test_suite.c -o $(TEST_TARGET)
+	$(CC) $(CFLAGS) test_suite.c -o $(TEST_TARGET) -pthread
 	./$(TEST_TARGET)
 	rm -f $(TEST_TARGET)
 
